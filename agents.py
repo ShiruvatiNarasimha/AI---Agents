@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 import json
 import os
+from twilio.rest import Client
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,6 +26,12 @@ api_client = asana.ApiClient(configuration)
 tasks_api = asana.TasksApi(api_client)
 stories_api = asana.StoriesApi(api_client)
 projects_api = asana.ProjectsApi(api_client)
+
+# Initialize Twilio client for WhatsApp
+twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+twilio_client = Client(twilio_account_sid, twilio_auth_token)
+whatsapp_from = os.getenv("TWILIO_WHATSAPP_FROM", "")  # Should be in format "whatsapp:+1234567890"
 
 def create_asana_task(task_name, due_on="today", notes=""):
     """
@@ -171,6 +178,48 @@ def search_asana_tasks(query):
     except ApiException as e:
         return f"Exception when searching tasks: {e}"
 
+def send_whatsapp_message(to, message):
+    """
+    Send a WhatsApp message using Twilio
+    
+    Args:
+        to (str): The recipient's phone number in format "+1234567890" (will be prefixed with "whatsapp:")
+        message (str): The message content to send
+    
+    Returns:
+        str: Success message or error details
+    """
+    if not to.startswith("whatsapp:"):
+        to = f"whatsapp:{to}"
+    
+    try:
+        message = twilio_client.messages.create(
+            body=message,
+            from_=whatsapp_from,
+            to=to
+        )
+        return f"Message sent successfully! SID: {message.sid}"
+    except Exception as e:
+        return f"Error sending WhatsApp message: {str(e)}"
+
+def notify_task_update(to, task_name, status="created", due_date=None):
+    """
+    Send a WhatsApp notification about a task update
+    
+    Args:
+        to (str): Recipient's phone number in format "+1234567890"
+        task_name (str): Name of the task
+        status (str): Status of the task (created/updated/completed)
+        due_date (str, optional): Due date of the task
+    
+    Returns:
+        str: Result of the send operation
+    """
+    due_text = f" due on {due_date}" if due_date else ""
+    message = f"Task update: '{task_name}' has been {status}{due_text}."
+    
+    return send_whatsapp_message(to, message)
+
 def get_tools():
     # Define tools (functions) that the AI can use
     # This follows OpenAI's function calling format
@@ -286,6 +335,57 @@ def get_tools():
                     "required": ["query"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "send_whatsapp_message",
+                "description": "Send a WhatsApp message to a specified phone number",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "to": {
+                            "type": "string",
+                            "description": "Recipient's phone number (e.g., '+1234567890')"
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Message content to send"
+                        }
+                    },
+                    "required": ["to", "message"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "notify_task_update",
+                "description": "Send a WhatsApp notification about a task update",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "to": {
+                            "type": "string",
+                            "description": "Recipient's phone number (e.g., '+1234567890')"
+                        },
+                        "task_name": {
+                            "type": "string",
+                            "description": "Name of the task"
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "Status of the task (created/updated/completed)",
+                            "enum": ["created", "updated", "completed"]
+                        },
+                        "due_date": {
+                            "type": "string",
+                            "description": "Due date of the task (optional)"
+                        }
+                    },
+                    "required": ["to", "task_name"]
+                }
+            }
         }
     ]
     return tools
@@ -312,7 +412,9 @@ def prompt_ai(messages):
             "get_asana_tasks": get_asana_tasks,
             "update_asana_task": update_asana_task,
             "add_comment_to_task": add_comment_to_task,
-            "search_asana_tasks": search_asana_tasks
+            "search_asana_tasks": search_asana_tasks,
+            "send_whatsapp_message": send_whatsapp_message,
+            "notify_task_update": notify_task_update
         }
 
 
@@ -352,7 +454,7 @@ def main():
     messages = [
         {
             "role": "system",
-            "content": f"""You are a personal assistant who helps manage tasks in Asana. 
+            "content": f"""You are a personal assistant who helps manage tasks in Asana and send WhatsApp messages. 
 The current date is: {datetime.now().date()}
 You can help users with the following actions:
 1. Create new tasks with names, due dates, and notes
@@ -360,8 +462,11 @@ You can help users with the following actions:
 3. Update task details like name, due date, or completion status
 4. Add comments to tasks
 5. Search for specific tasks
+6. Send WhatsApp messages to contacts
+7. Send WhatsApp notifications about task updates
 
-Always provide helpful, concise responses. When creating or updating tasks, confirm the details before proceeding."""
+Always provide helpful, concise responses. When creating or updating tasks, confirm the details before proceeding.
+For WhatsApp messages, always confirm the phone number and message content before sending."""
         }
     ]
 
