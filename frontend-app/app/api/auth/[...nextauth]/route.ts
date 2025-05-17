@@ -16,7 +16,10 @@ declare module "next-auth" {
   }
 }
 
-const prisma = new PrismaClient();
+// Create a global prisma instance to prevent multiple instances in development
+const globalForPrisma = global as unknown as { prisma: PrismaClient };
+const prisma = globalForPrisma.prisma || new PrismaClient();
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
 const handler = NextAuth({
   adapter: PrismaAdapter(prisma),
